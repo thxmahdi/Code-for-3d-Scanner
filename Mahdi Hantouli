@@ -1,0 +1,115 @@
+% Create Arduino object with Servo and Ultrasonic libraries
+a = arduino('COM5', 'Uno', 'Libraries', {'Servo', 'Ultrasonic'});
+% Pin assignments
+horizontalServoPin = 'D6'; % Horizontal servo pin
+verticalServoPin = 'D5'; % Vertical servo pin
+joystickXPin = 'A0'; % Joystick X-axis (VRx)
+joystickYPin = 'A1'; % Joystick Y-axis (VRy)
+buttonPin = 'D2'; % Optional button (SW) pin for reset
+trigPin = 'D7'; % Ultrasonic sensor trigger pin
+echoPin = 'D8'; % Ultrasonic sensor echo pin
+% Create servo objects
+horizontalServo = servo(a, horizontalServoPin); 
+verticalServo = servo(a, verticalServoPin);
+% Explicitly set the initial position for both servos (avoiding flipping)
+horizontalAngle = 90; % Start both servos at 90 degrees (middle)
+verticalAngle = 90; % This prevents the servo from flipping backward
+% Move servos to the starting position immediately
+writePosition(horizontalServo, horizontalAngle / 180);
+writePosition(verticalServo, verticalAngle / 180);
+pause(0.2); % Give servos a moment to reach their starting position
+% Create ultrasonic sensor object
+ultrasonicSensor = ultrasonic(a, trigPin, echoPin);
+% Set up button (optional)
+configurePin(a, buttonPin, 'DigitalInput'); % Joystick button for reset
+% Initialize arrays to store data
+xData = [];
+yData = [];
+zData = [];
+% Buffer size for smoothing (moving average)
+bufferSize = 20;
+distanceBuffer = zeros(1, bufferSize);
+% Calibration factor (adjust based on testing)
+calibrationFactor = 1.02; % Adjust if needed based on measured values
+% Fix: `numReadings` must be an integer, set to a reasonable number for averaging
+numReadings = 4; % Number of readings to average
+% Increase step size for faster and smoother servo movement
+stepSize = 45; % Larger step size for faster responsiveness
+smoothingFactor = 0.013; % Small delay for smooth movement
+% Initialize 2D/3D figure for real-time plotting
+figure;
+hold on;
+grid on;
+title('Real-Time Ultrasonic Scanner Visualization');
+xlabel('X (meters)');
+ylabel('Y (meters)');
+zlabel('Z (meters)');
+scatter3Plot = scatter3([], [], [], 'filled'); % Initialize empty 3D scatter plot
+% Main loop to control the servos and collect data in real-time
+while true
+% Read joystick X and Y values (scaled to -1 to 1 range)
+xValue = (readVoltage(a, joystickXPin) - 2.5) / 2.5; % Centered at 0
+yValue = (readVoltage(a, joystickYPin) - 2.5) / 2.5; % Centered at 0
+% Increment the angles based on joystick input
+if abs(xValue) > 0.01 % Reduce dead zone for more reactive movement
+horizontalAngle = horizontalAngle + stepSize * xValue;
+horizontalAngle = max(0, min(180, horizontalAngle)); % Keep angle between 0 and 180 degrees
+end
+if abs(yValue) > 0.01 % Reduce dead zone for more reactive movement
+verticalAngle = verticalAngle + stepSize * yValue;
+verticalAngle = max(0, min(180, verticalAngle)); % Keep angle between 0 and 180 degrees
+end
+% Move the servos based on the updated angles smoothly
+writePosition(horizontalServo, horizontalAngle / 180);
+writePosition(verticalServo, verticalAngle / 180);
+% Take multiple readings and average them for more accurate distance
+totalDistance = 0;
+for i = 1:numReadings
+currentDistance = readDistance(ultrasonicSensor);
+% Debugging: Print out the sensor reading
+fprintf('Reading %d: %.2f meters\n', i, currentDistance);
+% Check if the reading is valid
+if currentDistance > 0 && currentDistance < 4 % Valid range for the sensor
+totalDistance = totalDistance + currentDistance;
+else
+disp('Invalid reading, ignoring.');
+end
+pause(smoothingFactor); % Small delay for smooth control
+end
+averageDistance = totalDistance / numReadings;
+% Apply calibration factor to correct distance
+calibratedDistance = averageDistance * calibrationFactor;
+% Add the new reading to the buffer for smoothing
+distanceBuffer = [distanceBuffer(2:end), calibratedDistance];
+% Apply moving average filter to smooth data
+smoothedDistance = mean(distanceBuffer);
+% Check if the smoothed distance is valid (within sensor range)
+if smoothedDistance < 4 % Sensor max range is 4 meters
+% Convert angles to radians
+horizontalAngleRad = deg2rad(horizontalAngle);
+verticalAngleRad = deg2rad(verticalAngle);
+% Convert polar coordinates (angles + distance) to Cartesian coordinates
+x = smoothedDistance * sin(verticalAngleRad) * cos(horizontalAngleRad);
+y = smoothedDistance * sin(verticalAngleRad) * sin(horizontalAngleRad);
+z = smoothedDistance * cos(verticalAngleRad);
+% Store the 3D points (x, y, z)
+xData = [xData, x];
+yData = [yData, y];
+zData = [zData, z];
+% Update the 3D scatter plot in real-time
+set(scatter3Plot, 'XData', xData, 'YData', yData, 'ZData', zData);
+drawnow; % Ensure real-time plot updates
+else
+disp('Out of range or invalid distance.');
+end % End of distance validity check
+% Optional: Check if the joystick button is pressed to reset servos
+if readDigitalPin(a, buttonPin) == 0
+horizontalAngle = 90; % Reset horizontal servo to center
+verticalAngle = 90; % Reset vertical servo to center
+writePosition(horizontalServo, horizontalAngle / 180);
+writePosition(verticalServo, verticalAngle / 180);
+disp('Joystick button pressed. Servos reset to center.');
+end % End of button check
+% Shorter delay for smoother control and faster updates
+pause(0.01); % Adjust to fine-tune responsiveness
+end % End of while loop
